@@ -1,0 +1,6 @@
+__pycache__/
+data_clean.csv
+processed_data.pkl
+.DS_Store
+.ipynb_checkpoints/
+catboost_info/
