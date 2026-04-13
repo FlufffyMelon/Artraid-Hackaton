@@ -2,7 +2,7 @@
 Двухмодельная система предсказания выкупа заказов.
 
 Повторные клиенты (contact_Число сделок >= 1) → LogReg на одном признаке.
-Новые клиенты (contact_Число сделок = NaN/0) → LogReg на ~25 признаках.
+Новые клиенты (contact_Число сделок = NaN/0) → LogReg на ~23 признаках.
 """
 
 import numpy as np
@@ -36,6 +36,16 @@ class BuyoutPredictor:
         self._threshold = w.get("threshold", 0.5)
         self._manager_deal_count_map = w.get("manager_deal_count_map", {})
         self._manager_deal_count_default = w.get("manager_deal_count_default", 1)
+
+        # Bin parameters
+        self._cart_bins = w.get("cart_bins", [-1, 8, 12, 16, float("inf")])
+        self._cart_labels = w.get("cart_labels", ["1-8", "9-12", "13-16", "17+"])
+        self._price_bins = w.get("price_bins", [0, 3000, 5000, 8000, 15000, 25000, float("inf")])
+        self._price_labels = w.get("price_labels", ["0-3k", "3-5k", "5-8k", "8-15k", "15-25k", "25k+"])
+        self._delta_bins = w.get("delta_bins", [0, 0.5/24, 1/24, 2/24, float("inf")])
+        self._delta_labels = w.get("delta_labels", ["<30мин", "30-60мин", "1-2ч", ">2ч"])
+        self._manager_bins = w.get("manager_bins", [0, 800, 1800, 3000, float("inf")])
+        self._manager_labels = w.get("manager_labels", ["0-800", "800-1.8k", "1.8-3k", "3k+"])
 
         cities = w["russia_cities"]
         self._sorted_cities = sorted(cities, key=lambda c: len(c["name"]), reverse=True)
@@ -73,43 +83,48 @@ class BuyoutPredictor:
         df["lead_price"] = pd.to_numeric(df.get("lead_price"), errors="coerce")
         df["contact_Число сделок"] = pd.to_numeric(df.get("contact_Число сделок"), errors="coerce")
 
-        for col in ["lead_Вес (грамм)*", "lead_Длина", "lead_Ширина", "lead_Высота",
-                     "lead_Скидка", "lead_Стоимость доставки"]:
+        for col in ["lead_Скидка", "lead_Стоимость доставки", "lead_Масса (гр)"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # NaN как отдельный класс
+        # NaN → '__NaN__' для всех категориальных (единая конвенция)
         for col in ["lead_Квалификация лида", "lead_Категория и варианты выбора",
-                     "lead_Тариф Доставки", "lead_будущие покупки", "lead_Модель телефона"]:
+                     "lead_Тариф Доставки", "lead_будущие покупки", "lead_Модель телефона",
+                     "lead_Служба доставки", "lead_Вид оплаты", "lead_Проблема"]:
             if col in df.columns:
                 df[col] = df[col].fillna("__NaN__")
 
-        # NaN → "unknown"
-        for col in ["lead_Служба доставки", "lead_Вид оплаты", "lead_Проблема",
-                     "lead_Компания Отправитель"]:
-            if col in df.columns:
-                df[col] = df[col].fillna("unknown")
+        # Объединение мелких категорий
+        if "lead_Квалификация лида" in df.columns:
+            df["lead_Квалификация лида"] = df["lead_Квалификация лида"].replace(
+                {"Неквал лид": "D/Неквал лид", "D - лид": "D/Неквал лид"})
+        if "lead_Категория и варианты выбора" in df.columns:
+            df["lead_Категория и варианты выбора"] = df["lead_Категория и варианты выбора"].replace(
+                {"Нет категории": "__NaN__"})
 
-        # Временные
-        df["sale_month"] = df["sale_date"].dt.month.astype(str)
+        # sale_weekday
         df["sale_weekday"] = df["sale_date"].dt.dayofweek.astype(str)
-        df["sale_quarter"] = ((df["sale_date"].dt.month - 1) // 3 + 1).astype(str)
-        df["sale_stale"] = ((df["sale_ts"] - df["lead_created_at"]) / 86400 > 1).astype(int)
+
+        # sale_delta → delta_bin
+        df["sale_delta"] = ((df["sale_ts"] - df["lead_created_at"]) / 86400).clip(lower=0).fillna(0)
+        df["delta_bin"] = pd.cut(
+            df["sale_delta"], bins=self._delta_bins, labels=self._delta_labels,
+            include_lowest=True).astype(str)
 
         # Бинарные
-        df["has_dimensions"] = df.get("lead_Вес (грамм)*", pd.Series(dtype=float)).notna().astype(int)
         df["has_discount"] = df.get("lead_Скидка", pd.Series(dtype=float)).notna().astype(int)
 
         paid = ["cpc", "cpc__rt_view-yes_lead-no_all", "Bloger", "article_direct", "cpm"]
         df["is_paid_traffic"] = df.get("lead_utm_medium", pd.Series(dtype=str)).isin(paid).astype(int)
 
-        # cart_n_items
+        # cart_n_items → cart_bin
         df["cart_n_items"] = df.get("lead_Состав заказа", pd.Series(dtype=str)).apply(self._count_items)
+        df["cart_bin"] = pd.cut(
+            df["cart_n_items"], bins=self._cart_bins, labels=self._cart_labels).astype(str)
 
         # price_bin
-        bins = [0, 3000, 5000, 8000, 15000, 25000, np.inf]
-        labels = ["0-3k", "3-5k", "5-8k", "8-15k", "15-25k", "25k+"]
-        df["price_bin"] = pd.cut(df["lead_price"], bins=bins, labels=labels).astype(str)
+        df["price_bin"] = pd.cut(
+            df["lead_price"], bins=self._price_bins, labels=self._price_labels).astype(str)
         df.loc[df["lead_price"].isna(), "price_bin"] = "unknown"
 
         # Стоимость доставки
@@ -123,12 +138,15 @@ class BuyoutPredictor:
             if col in df.columns:
                 df[col] = df[col].astype(str)
 
-        # Агрегатные признаки
+        # manager_deal_count → manager_bin
         df["manager_deal_count"] = (
             df["lead_responsible_user_id"]
             .map(self._manager_deal_count_map)
             .fillna(self._manager_deal_count_default)
         )
+        df["manager_bin"] = pd.cut(
+            df["manager_deal_count"], bins=self._manager_bins,
+            labels=self._manager_labels).astype(str)
 
         # Гео
         cities, regions = self._geo_match(df.get("contact_Город", pd.Series(dtype=str)))
