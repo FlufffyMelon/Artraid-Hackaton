@@ -42,6 +42,9 @@ features:
       "Почта":
         - "Почта Посылка"
         - "__NaN__"
+      "Склад":
+        - "Посылка склад-дверь"
+        - "Посылка склад-склад"
       "Прочее":
         - "Экономичная посылка склад-склад"
         - "Почта Посылка 1 класса"
@@ -61,19 +64,21 @@ features:
     type: categorical
     nan: drop
     drop_first: false
-    # groups:
-    #   "__NaN__": ["Нет категории"] # TODO
 
   lead_Модель телефона:
     type: categorical
     nan: drop
     drop_first: false
 
+  # lead_responsible_user_id: one-hot categorical.
+  # При 26 уникальных менеджерах one-hot лучше target encoding — позволяет
+  # модели присвоить индивидуальный коэффициент каждому менеджеру.
+  # L1-регуляризация обнуляет малозначимых менеджеров автоматически.
   lead_responsible_user_id:
-    type: target_encoding
+    type: categorical
     nan: category
     cast: str
-    alpha: 10
+    drop_first: false
 
   lead_Проблема:
     type: categorical
@@ -88,14 +93,6 @@ features:
         - "Бессоница"
         - "Головные боли"
         - "Зрительная система"
-      "third":
-        - "Отеки"
-        - "Инсульт"
-        - "Давление"
-        - "Боли и тяжесть в ногах"
-        - "Ушибы. травмы, отеки, ожоги"
-        - "__NaN__"
-      "Прочее":
         - "Мочеполовая система"
         - "Мужские проблемы"
         - "Женские проблемы"
@@ -109,35 +106,13 @@ features:
         - "Склероз, деменция"
         - "Дыхательные пути"
         - "Волосы"
-      # "Суставы и позвоночник":
-      #   - "Боли и тяжесть в ногах"
-      #   - "Послеоперационная реабилитация"
-      #   - "Ушибы. травмы, отеки, ожоги"
-      # "Сердечно-сосудистые":
-      #   - "Сердечно-сосудистые заболевания"
-      #   - "Инсульт"
-      # "Неврология":
-      #   - "Бессоница"
-      #   - "Головные боли"
-      # "Зрение":
-      #   - "Зрительная система"
-      # "Отёки и давление":
-      #   - "Отеки"
-      #   - "Давление"
-      # "Прочее":
-      #   - "__NaN__"
-      #   - "Мочеполовая система"
-      #   - "Мужские проблемы"
-      #   - "Женские проблемы"
-      #   - "Онкология"
-      #   - "Проблемная кожа"
-      #   - "Сахарный диабет"
-      #   - "Ухо, горло, нос"
-      #   - "Желчный пузырь"
-      #   - "Щитовидная железа"
-      #   - "Склероз, деменция"
-      #   - "Дыхательные пути"
-      #   - "Волосы"
+      "third":
+        - "Отеки"
+        - "Инсульт"
+        - "Давление"
+        - "Боли и тяжесть в ногах"
+        - "Ушибы. травмы, отеки, ожоги"
+        - "__NaN__"
 
   # lead_group_id: NaN и класс "0" → all-zeros при one-hot.
   lead_group_id:
@@ -165,8 +140,8 @@ features:
     op:
       name: bin
       source: lead_price
-      bins: [[0, 3000], [3000, 5000], [5000, 8000], [8000, 15000], [15000, 25000], [25000, .inf]]
-      bin_labels: ["0-3k", "3-5k", "5-8k", "8-15k", "15-25k", "25k+"]
+      bins: [[0, 5000], [5000, 8000], [8000, 15000], [15000, .inf]]
+      bin_labels: ["0-5k", "5-8k", "8-15k", "15k+"]
       nan_label: "unknown"
 
   sale_weekday:
@@ -196,8 +171,8 @@ features:
     op:
       name: bin
       source: cart_n_items
-      bins: [[-1, 8], [8, 12], [12, 16], [16, .inf]]
-      bin_labels: ["1-8", "9-12", "13-16", "17+"]
+      bins: [[-1, 8], [8, 12], [12, .inf]]
+      bin_labels: ["1-8", "9-12", "13+"]
 
   manager_deal_count:
     type: numeric
@@ -217,6 +192,19 @@ features:
       source: manager_deal_count
       bins: [[0, 800], [800, 1800], [1800, 3000], [3000, .inf]]
       bin_labels: ["0-800", "800-1.8k", "1.8-3k", "3k+"]
+
+  # mgr_group: группа менеджера по buyout rate новых клиентов.
+  # Менеджеры с rate >= 40% → mgr_high, 20-40% → mgr_mid, <20% → mgr_low.
+  # Контекстная таблица mgr_group_map вычисляется в ноутбуке из данных.
+  mgr_group:
+    type: categorical
+    drop_first: false
+    op:
+      name: map
+      source: lead_responsible_user_id
+      table: mgr_group_map
+      key_cast: str
+      default: "mgr_low"
 
   # delta_bin: инлайнит sale_delta через pipeline (arithmetic → bin).
   delta_bin:
@@ -266,10 +254,20 @@ features:
       normalize: {lower: true, replace: {"ё": "е"}}
       unknown_label: "__unknown__"
 
+  # is_big_city: 1 если город с населением >= 500k, иначе 0.
+  # Контекстная таблица big_city_map вычисляется в ноутбуке из russia-cities.json.
+  is_big_city:
+    type: binary
+    op:
+      name: map
+      source: city_clean
+      table: big_city_map
+      default: 0
+
   contact_region:
     type: target_encoding
     encoding_group: geo
-    alpha: 10
+    alpha: 50
     op:
       name: substring_lookup
       source: contact_Город
