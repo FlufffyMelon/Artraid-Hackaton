@@ -27,8 +27,8 @@ PENALTY = "l1"           # "l1" or "l2"
 C = 2                    # inverse regularization strength
 SOLVER = "liblinear"     # "liblinear" for l1, "lbfgs" for l2
 
-# Target encoding
-TE_ALPHA = 10            # smoothing parameter for target encoding
+# Target encoding alpha — read from features.yaml per feature
+TE_ALPHA = 10            # fallback if not specified in YAML
 
 # Per-feature drop_first for one-hot encoding (True = drop first category)
 # Set to None to use defaults from processed_data.pkl (all False)
@@ -44,9 +44,14 @@ EXCLUDE_FEATURES = None
 # ============================================================
 
 DATA_PATH = "processed_data.pkl"
+FEATURES_YAML = "features.yaml"
 
 with open(DATA_PATH, "rb") as f:
     art = pickle.load(f)
+
+import yaml
+with open(FEATURES_YAML, encoding="utf-8") as f:
+    feat_config = yaml.safe_load(f)
 
 cat_cols = art["cat_cols"]
 num_cols = art["num_cols"]
@@ -54,6 +59,12 @@ bin_cols = art["bin_cols"]
 geo_cols = art["geo_cols"]
 te_cat_cols = art["te_cat_cols"]
 cat_drop_first = art["cat_drop_first"]
+
+# Read per-feature alpha from features.yaml
+TE_ALPHA_PER_FEATURE = {}
+for fname, fspec in feat_config.get("features", {}).items():
+    if "alpha" in fspec:
+        TE_ALPHA_PER_FEATURE[fname] = fspec["alpha"]
 
 all_feature_cols = cat_cols + num_cols + bin_cols + geo_cols + te_cat_cols
 
@@ -101,8 +112,12 @@ def kfold_target_encoding(X, y, col, n_splits=5, alpha=10, random_state=42):
     return te
 
 
-def encode_fold(X_tr, y_tr, X_va, cc, nc, bc, gc, tc, alpha, drop_first_map):
-    """Full encoding pipeline: one-hot + scaler + binary + target encoding."""
+def encode_fold(X_tr, y_tr, X_va, cc, nc, bc, gc, tc, alpha, drop_first_map,
+                alpha_per_feature=None):
+    """Full encoding pipeline: one-hot + scaler + binary + target encoding.
+
+    alpha_per_feature: dict mapping TE column name → alpha override.
+    """
     parts_tr, parts_va = [], []
 
     # One-hot (per-column drop_first; NaN → all-zeros automatically)
@@ -130,17 +145,19 @@ def encode_fold(X_tr, y_tr, X_va, cc, nc, bc, gc, tc, alpha, drop_first_map):
         parts_tr.append(X_tr[bc].reset_index(drop=True).set_index(X_tr.index))
         parts_va.append(X_va[bc].reset_index(drop=True).set_index(X_va.index))
 
-    # Target encoding
+    # Target encoding (per-feature alpha)
+    apf = alpha_per_feature or {}
     gm = float(y_tr.mean())
     te_cols = gc + tc
     for col_te in te_cols:
+        a = apf.get(col_te, alpha)
         te_name = col_te + "_te"
-        te_tr = kfold_target_encoding(X_tr, y_tr, col_te, alpha=alpha)
+        te_tr = kfold_target_encoding(X_tr, y_tr, col_te, alpha=a)
         parts_tr.append(pd.DataFrame({te_name: te_tr}, index=X_tr.index))
         stats = (X_tr.join(y_tr.rename("target"))
                  .groupby(col_te)["target"]
                  .agg(["mean", "count"]))
-        te_map = (stats["mean"] * stats["count"] + gm * alpha) / (stats["count"] + alpha)
+        te_map = (stats["mean"] * stats["count"] + gm * a) / (stats["count"] + a)
         parts_va.append(
             pd.DataFrame(
                 {te_name: X_va[col_te].map(te_map).fillna(gm).values},
@@ -179,7 +196,7 @@ for fold, (tr_idx, va_idx) in enumerate(skf.split(X_new_train, y_new_train)):
 
     X_tr_enc, X_va_enc = encode_fold(
         X_tr, y_tr, X_va, cat_cols, num_cols, bin_cols, geo_cols, te_cat_cols,
-        alpha=TE_ALPHA, drop_first_map=dfm,
+        alpha=TE_ALPHA, drop_first_map=dfm, alpha_per_feature=TE_ALPHA_PER_FEATURE,
     )
 
     m = LogisticRegression(
@@ -201,12 +218,12 @@ print(f"\nCV AUC: {np.mean(cv_aucs):.4f} ± {np.std(cv_aucs):.4f}")
 X_train_enc, X_test_enc = encode_fold(
     X_new_train, y_new_train, X_new_test,
     cat_cols, num_cols, bin_cols, geo_cols, te_cat_cols,
-    alpha=TE_ALPHA, drop_first_map=dfm,
+    alpha=TE_ALPHA, drop_first_map=dfm, alpha_per_feature=TE_ALPHA_PER_FEATURE,
 )
 _, X_val_enc = encode_fold(
     X_new_train, y_new_train, X_new_val,
     cat_cols, num_cols, bin_cols, geo_cols, te_cat_cols,
-    alpha=TE_ALPHA, drop_first_map=dfm,
+    alpha=TE_ALPHA, drop_first_map=dfm, alpha_per_feature=TE_ALPHA_PER_FEATURE,
 )
 
 model = LogisticRegression(
@@ -256,3 +273,9 @@ if len(zero) > 0:
     print(f"\n  Zero-coefficient features ({len(zero)}):")
     for feat in zero.index:
         print(f"    {feat}")
+
+# Machine-readable summary (for autoresearch metric extraction)
+val_auc = roc_auc_score(y_new_val, p_val)
+val_f1 = f1_score(y_new_val, (p_val >= 0.5).astype(int))
+print(f"\nMETRIC_VAL_ROC_AUC={val_auc:.4f}")
+print(f"METRIC_VAL_F1={val_f1:.4f}")
