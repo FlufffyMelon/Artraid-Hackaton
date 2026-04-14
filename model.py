@@ -36,6 +36,7 @@ class BuyoutPredictor:
         self._threshold = w.get("threshold", 0.5)
         self._manager_deal_count_map = w.get("manager_deal_count_map", {})
         self._manager_deal_count_default = w.get("manager_deal_count_default", 1)
+        self._cat_drop_first = w.get("cat_drop_first", {})
 
         # Bin parameters
         self._cart_bins = w.get("cart_bins", [-1, 8, 12, 16, float("inf")])
@@ -87,20 +88,78 @@ class BuyoutPredictor:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # NaN → '__NaN__' для всех категориальных (единая конвенция)
-        for col in ["lead_Квалификация лида", "lead_Категория и варианты выбора",
-                     "lead_Тариф Доставки", "lead_будущие покупки", "lead_Модель телефона",
-                     "lead_Служба доставки", "lead_Вид оплаты", "lead_Проблема"]:
+        # NaN → '__NaN__' для категориальных с nan=category.
+        # Признаки с nan=drop (lead_Квалификация лида, lead_Категория...,
+        # lead_Модель телефона, lead_group_id) оставляют NaN для all-zeros one-hot.
+        for col in ["lead_Тариф Доставки", "lead_Служба доставки",
+                     "lead_Вид оплаты", "lead_Проблема"]:
             if col in df.columns:
                 df[col] = df[col].fillna("__NaN__")
 
-        # Объединение мелких категорий
+        # Объединение мелких категорий (зеркалит features.yaml)
         if "lead_Квалификация лида" in df.columns:
             df["lead_Квалификация лида"] = df["lead_Квалификация лида"].replace(
                 {"Неквал лид": "D/Неквал лид", "D - лид": "D/Неквал лид"})
-        if "lead_Категория и варианты выбора" in df.columns:
-            df["lead_Категория и варианты выбора"] = df["lead_Категория и варианты выбора"].replace(
-                {"Нет категории": "__NaN__"})
+        if "lead_Вид оплаты" in df.columns:
+            df["lead_Вид оплаты"] = df["lead_Вид оплаты"].replace(
+                {"__NaN__": "Прочее", "Оплата Золотой Короной": "Прочее"})
+        if "lead_Тариф Доставки" in df.columns:
+            df["lead_Тариф Доставки"] = df["lead_Тариф Доставки"].replace({
+                "Почта Посылка": "Почта",
+                "__NaN__": "Почта",
+                "Экономичная посылка склад-склад": "Прочее",
+                "Почта Посылка 1 класса": "Прочее",
+                "Экономичная посылка склад-дверь": "Прочее",
+                "Экспресс склад-дверь": "Прочее",
+                "Экспресс склад-склад": "Прочее",
+                "Посылка склад-постамат": "Прочее",
+            })
+        if "lead_Служба доставки" in df.columns:
+            df["lead_Служба доставки"] = df["lead_Служба доставки"].replace({
+                "СДЭК до ПВЗ": "СДЭК",
+                "СДЭК до Двери": "СДЭК",
+                "Самовывоз": "Прочее",
+                "__NaN__": "Прочее",
+                "Курьер ЕМС": "Прочее",
+            })
+        if "lead_Проблема" in df.columns:
+            df["lead_Проблема"] = df["lead_Проблема"].replace({
+                # first — высокий объём, ~30% buyout
+                "Суставы и позвоночник": "first",
+                "Варикоз": "first",
+                "Сердечно-сосудистые заболевания": "first",
+                # second — повышенный buyout (~42-56%)
+                "Бессоница": "second",
+                "Головные боли": "second",
+                "Зрительная система": "second",
+                # third — пониженный buyout + __NaN__
+                "Отеки": "third",
+                "Инсульт": "third",
+                "Давление": "third",
+                "Боли и тяжесть в ногах": "third",
+                "Ушибы. травмы, отеки, ожоги": "third",
+                "__NaN__": "third",
+                # Прочее — хвост
+                "Мочеполовая система": "Прочее",
+                "Мужские проблемы": "Прочее",
+                "Женские проблемы": "Прочее",
+                "Послеоперационная реабилитация": "Прочее",
+                "Онкология": "Прочее",
+                "Ухо, горло, нос": "Прочее",
+                "Сахарный диабет": "Прочее",
+                "Проблемная кожа": "Прочее",
+                "Желчный пузырь": "Прочее",
+                "Щитовидная железа": "Прочее",
+                "Склероз, деменция": "Прочее",
+                "Дыхательные пути": "Прочее",
+                "Волосы": "Прочее",
+                "Мозоли, шпоры, шишки": "Прочее",
+                "Животные": "Прочее",
+                "Грибок ногтей": "Прочее",
+                "Детские заболевая": "Прочее",
+                "Ковид и ОРВИ": "Прочее",
+                "Эпилепсия": "Прочее",
+            })
 
         # sale_weekday
         df["sale_weekday"] = df["sale_date"].dt.dayofweek.astype(str)
@@ -112,10 +171,12 @@ class BuyoutPredictor:
             include_lowest=True).astype(str)
 
         # Бинарные
-        df["has_discount"] = df.get("lead_Скидка", pd.Series(dtype=float)).notna().astype(int)
-
         paid = ["cpc", "cpc__rt_view-yes_lead-no_all", "Bloger", "article_direct", "cpm"]
         df["is_paid_traffic"] = df.get("lead_utm_medium", pd.Series(dtype=str)).isin(paid).astype(int)
+
+        df["has_future_purchase"] = (
+            df.get("lead_будущие покупки", pd.Series(dtype=object)).notna().astype(int)
+        )
 
         # cart_n_items → cart_bin
         df["cart_n_items"] = df.get("lead_Состав заказа", pd.Series(dtype=str)).apply(self._count_items)
@@ -127,16 +188,14 @@ class BuyoutPredictor:
             df["lead_price"], bins=self._price_bins, labels=self._price_labels).astype(str)
         df.loc[df["lead_price"].isna(), "price_bin"] = "unknown"
 
-        # Стоимость доставки
-        if "lead_Стоимость доставки" in df.columns:
-            df["lead_Стоимость доставки"] = df["lead_Стоимость доставки"].fillna(0)
-        else:
-            df["lead_Стоимость доставки"] = 0
-
-        # ID → str
-        for col in ["lead_pipeline_id", "lead_group_id", "lead_responsible_user_id"]:
-            if col in df.columns:
-                df[col] = df[col].astype(str)
+        # ID → str (NaN-preserving: nan:drop features keep NaN for all-zeros one-hot)
+        if "lead_group_id" in df.columns:
+            s = pd.to_numeric(df["lead_group_id"], errors="coerce")
+            na_mask = s.isna()
+            df["lead_group_id"] = s.astype("Int64").astype(str)
+            df.loc[na_mask, "lead_group_id"] = np.nan
+        if "lead_responsible_user_id" in df.columns:
+            df["lead_responsible_user_id"] = df["lead_responsible_user_id"].astype(str)
 
         # manager_deal_count → manager_bin
         df["manager_deal_count"] = (
@@ -176,17 +235,23 @@ class BuyoutPredictor:
     def _predict_new(self, df: pd.DataFrame) -> np.ndarray:
         parts = []
 
-        # One-hot
-        onehot = pd.get_dummies(df[self._cat_cols], drop_first=True)
+        # One-hot (per-column drop_first; NaN → all-zeros via reindex fill_value=0)
+        oh_parts = []
+        for col in self._cat_cols:
+            df_flag = self._cat_drop_first.get(col, False)
+            oh_parts.append(pd.get_dummies(df[[col]], drop_first=df_flag))
+        onehot = pd.concat(oh_parts, axis=1)
         onehot = onehot.reindex(columns=self._onehot_columns, fill_value=0)
         parts.append(onehot.values)
 
-        # Числовые
-        num = df[self._num_cols].fillna(0).values
-        parts.append(self._scaler_new.transform(num))
+        # Числовые (опционально — может быть пусто)
+        if self._num_cols:
+            num = df[self._num_cols].fillna(0).values
+            parts.append(self._scaler_new.transform(num))
 
         # Бинарные
-        parts.append(df[self._bin_cols].values)
+        if self._bin_cols:
+            parts.append(df[self._bin_cols].values)
 
         # Target encoding
         te_cols = self._geo_cols + self._te_cat_cols

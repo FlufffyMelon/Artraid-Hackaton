@@ -1,0 +1,280 @@
+# ================================================================
+# Конфиг признаков для модели предсказания выкупа.
+#
+# Схема см. utils.py:
+#   type: categorical | target_encoding | numeric | binary
+#   nan:  category (default для cat/te) | fill (+nan_value) | ignore | drop
+#         drop = NaN → all-zeros при one-hot (NaN не создаёт свой столбец)
+#   cast: str | int | float
+#   drop_first: bool           (для categorical; default false)
+#   groups: { "новое_имя": ["исходное_1", ...] }
+#   alpha: int                 (только для target_encoding)
+#   encoding_group: geo        (оставляет признак в geo_cols, а не te_cat_cols)
+#   hidden: true               (вычисляется, но не попадает в FeatureColumns)
+#   source: <column>           (для raw; default = имя признака)
+#   op: { name, ...params... } (для engineered; см. реестр операций в utils.py)
+#
+# Порядок post-processing: nan → cast → groups (см. build_features).
+# Порядок записей важен: признак, использующий другой признак как source,
+# должен идти после него (YAML-dict сохраняет порядок).
+# ================================================================
+
+features:
+
+  # =============================================================
+  # ---------------------- RAW FEATURES -------------------------
+  # =============================================================
+
+  lead_Вид оплаты:
+    type: categorical
+    nan: category
+    drop_first: false
+    groups:
+      "Прочее":
+        - "__NaN__"
+        - "Оплата Золотой Короной"
+
+  lead_Тариф Доставки:
+    type: categorical
+    nan: category
+    drop_first: false
+    groups:
+      "Почта":
+        - "Почта Посылка"
+        - "__NaN__"
+      "Прочее":
+        - "Экономичная посылка склад-склад"
+        - "Почта Посылка 1 класса"
+        - "Экономичная посылка склад-дверь"
+        - "Экспресс склад-дверь"
+        - "Экспресс склад-склад"
+        - "Посылка склад-постамат"
+
+  lead_Квалификация лида:
+    type: categorical
+    nan: drop
+    drop_first: false
+    groups:
+      "D/Неквал лид": ["Неквал лид", "D - лид"]
+
+  lead_Категория и варианты выбора:
+    type: categorical
+    nan: drop
+    drop_first: false
+    # groups:
+    #   "__NaN__": ["Нет категории"] # TODO
+
+  lead_Модель телефона:
+    type: categorical
+    nan: drop
+    drop_first: false
+
+  lead_responsible_user_id:
+    type: target_encoding
+    nan: category
+    cast: str
+    alpha: 10
+
+  lead_Проблема:
+    type: categorical
+    nan: category
+    drop_first: false
+    groups:
+      "first":
+        - "Суставы и позвоночник"
+        - "Варикоз"
+        - "Сердечно-сосудистые заболевания"
+      "second":
+        - "Бессоница"
+        - "Головные боли"
+        - "Зрительная система"
+      "third":
+        - "Отеки"
+        - "Инсульт"
+        - "Давление"
+        - "Боли и тяжесть в ногах"
+        - "Ушибы. травмы, отеки, ожоги"
+        - "__NaN__"
+      "Прочее":
+        - "Мочеполовая система"
+        - "Мужские проблемы"
+        - "Женские проблемы"
+        - "Послеоперационная реабилитация"
+        - "Онкология"
+        - "Ухо, горло, нос"
+        - "Сахарный диабет"
+        - "Проблемная кожа"
+        - "Желчный пузырь"
+        - "Щитовидная железа"
+        - "Склероз, деменция"
+        - "Дыхательные пути"
+        - "Волосы"
+      # "Суставы и позвоночник":
+      #   - "Боли и тяжесть в ногах"
+      #   - "Послеоперационная реабилитация"
+      #   - "Ушибы. травмы, отеки, ожоги"
+      # "Сердечно-сосудистые":
+      #   - "Сердечно-сосудистые заболевания"
+      #   - "Инсульт"
+      # "Неврология":
+      #   - "Бессоница"
+      #   - "Головные боли"
+      # "Зрение":
+      #   - "Зрительная система"
+      # "Отёки и давление":
+      #   - "Отеки"
+      #   - "Давление"
+      # "Прочее":
+      #   - "__NaN__"
+      #   - "Мочеполовая система"
+      #   - "Мужские проблемы"
+      #   - "Женские проблемы"
+      #   - "Онкология"
+      #   - "Проблемная кожа"
+      #   - "Сахарный диабет"
+      #   - "Ухо, горло, нос"
+      #   - "Желчный пузырь"
+      #   - "Щитовидная железа"
+      #   - "Склероз, деменция"
+      #   - "Дыхательные пути"
+      #   - "Волосы"
+
+  # lead_group_id: NaN и класс "0" → all-zeros при one-hot.
+  lead_group_id:
+    type: categorical
+    nan: drop
+    drop_values: [0]
+    drop_first: false
+    cast: str
+
+  lead_Служба доставки:
+    type: categorical
+    nan: category
+    drop_first: false
+    groups:
+      "СДЭК": ["СДЭК до ПВЗ", "СДЭК до Двери"]
+      "Прочее": ["Самовывоз", "__NaN__", "Курьер ЕМС"]
+
+  # =============================================================
+  # ------------------ ENGINEERED FEATURES ----------------------
+  # =============================================================
+
+  price_bin:
+    type: categorical
+    drop_first: false
+    op:
+      name: bin
+      source: lead_price
+      bins: [[0, 3000], [3000, 5000], [5000, 8000], [8000, 15000], [15000, 25000], [25000, .inf]]
+      bin_labels: ["0-3k", "3-5k", "5-8k", "8-15k", "15-25k", "25k+"]
+      nan_label: "unknown"
+
+  sale_weekday:
+    type: categorical
+    drop_first: false
+    op:
+      name: datetime_attr
+      source: sale_date
+      attr: dayofweek
+      cast: str
+
+  # --- промежуточные numeric (hidden: не попадают в FeatureColumns) ---
+
+  cart_n_items:
+    type: numeric
+    hidden: true
+    op:
+      name: count_tokens
+      source: lead_Состав заказа
+      separators: [";", "\n"]
+      exclude_contains: "доставк"
+      min_if_any: 1
+
+  cart_bin:
+    type: categorical
+    drop_first: false
+    op:
+      name: bin
+      source: cart_n_items
+      bins: [[-1, 8], [8, 12], [12, 16], [16, .inf]]
+      bin_labels: ["1-8", "9-12", "13-16", "17+"]
+
+  manager_deal_count:
+    type: numeric
+    hidden: true
+    op:
+      name: map
+      source: lead_responsible_user_id
+      table: manager_map
+      key_cast: str
+      default: 1
+
+  manager_bin:
+    type: categorical
+    drop_first: false
+    op:
+      name: bin
+      source: manager_deal_count
+      bins: [[0, 800], [800, 1800], [1800, 3000], [3000, .inf]]
+      bin_labels: ["0-800", "800-1.8k", "1.8-3k", "3k+"]
+
+  # delta_bin: инлайнит sale_delta через pipeline (arithmetic → bin).
+  delta_bin:
+    type: categorical
+    drop_first: false
+    op:
+      name: pipeline
+      steps:
+        - name: arithmetic
+          sources: [sale_ts, lead_created_at]
+          formula: "(sale_ts - lead_created_at) / 86400"
+          clip_lower: 0
+          fillna: 0
+        - name: bin
+          bins: [[0, 0.020833333333333332], [0.020833333333333332, 0.041666666666666664],
+                 [0.041666666666666664, 0.08333333333333333], [0.08333333333333333, .inf]]
+          bin_labels: ["<30мин", "30-60мин", "1-2ч", ">2ч"]
+          include_lowest: true
+
+  # --- бинарные ---
+
+  has_future_purchase:
+    type: binary
+    op:
+      name: not_null
+      source: lead_будущие покупки
+
+  is_paid_traffic:
+    type: binary
+    op:
+      name: is_in
+      source: lead_utm_medium
+      values: [cpc, cpc__rt_view-yes_lead-no_all, Bloger, article_direct, cpm]
+
+  # --- гео ---
+
+  city_clean:
+    type: target_encoding
+    encoding_group: geo
+    alpha: 10
+    op:
+      name: substring_lookup
+      source: contact_Город
+      table: russia_cities
+      match_field: name
+      return_field: name
+      normalize: {lower: true, replace: {"ё": "е"}}
+      unknown_label: "__unknown__"
+
+  contact_region:
+    type: target_encoding
+    encoding_group: geo
+    alpha: 10
+    op:
+      name: substring_lookup
+      source: contact_Город
+      table: russia_cities
+      match_field: name
+      return_field: region
+      normalize: {lower: true, replace: {"ё": "е"}}
+      unknown_label: "__unknown__"
