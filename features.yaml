@@ -30,6 +30,9 @@ features:
     nan: category
     drop_first: false
     groups:
+      # "Онлайн":
+      #   - "Оплата онлайн"
+      #   - "Оплата на карту"
       "Прочее":
         - "__NaN__"
         - "Оплата Золотой Короной"
@@ -130,6 +133,21 @@ features:
       "СДЭК": ["СДЭК до ПВЗ", "СДЭК до Двери"]
       "Прочее": ["Самовывоз", "__NaN__", "Курьер ЕМС"]
 
+  # lead_FORMNAME:
+  #   type: categorical
+  #   nan: category
+  #   drop_first: false
+
+  # lead_utm_source:
+  #   type: categorical
+  #   nan: category
+  #   drop_first: false
+
+  # lead_utm_group:
+  #   type: categorical
+  #   nan: category
+  #   drop_first: false
+
   # =============================================================
   # ------------------ ENGINEERED FEATURES ----------------------
   # =============================================================
@@ -224,6 +242,46 @@ features:
           bin_labels: ["<30мин", "30-60мин", "1-2ч", ">2ч"]
           include_lowest: true
 
+  # utm_product / utm_brand: извлечение токенов из lead_utm_source вида
+  # "ppc_ru_yandex_art_npz" → продукт ("art") и бренд ("npz").
+  utm_product:
+    type: categorical
+    nan: category
+    drop_first: false
+    op:
+      name: split_take
+      source: lead_utm_source
+      separator: "_"
+      index: 3
+      default: "__NaN__"
+
+  utm_brand:
+    type: categorical
+    nan: category
+    drop_first: false
+    op:
+      name: split_take
+      source: lead_utm_source
+      separator: "_"
+      index: 4
+      default: "__NaN__"
+
+  # order_text_len:
+  #   type: numeric
+  #   hidden: true
+  #   op:
+  #     name: string_length
+  #     source: lead_Состав заказа
+
+  # order_text_bin:
+  #   type: categorical
+  #   drop_first: false
+  #   op:
+  #     name: bin
+  #     source: order_text_len
+  #     bins: [[-1, 1], [1, 50], [50, 100], [100, 200], [200, 500], [500, .inf]]
+  #     bin_labels: ["empty", "1-50", "51-100", "101-200", "201-500", "500+"]
+
   # --- бинарные ---
 
   has_future_purchase:
@@ -256,13 +314,13 @@ features:
 
   # is_big_city: 1 если город с населением >= 500k, иначе 0.
   # Контекстная таблица big_city_map вычисляется в ноутбуке из russia-cities.json.
-  is_big_city:
-    type: binary
-    op:
-      name: map
-      source: city_clean
-      table: big_city_map
-      default: 0
+  # is_big_city:
+  #   type: binary
+  #   op:
+  #     name: map
+  #     source: city_clean
+  #     table: big_city_map
+  #     default: 0
 
   contact_region:
     type: target_encoding

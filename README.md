@@ -6,46 +6,48 @@
 
 Система автоматически определяет тип клиента и применяет соответствующую модель:
 
-- **Повторные клиенты** (`contact_Число сделок` >= 1): buyout 97%+, LogReg на одном признаке
-- **Новые клиенты** (первый заказ): LogReg на ~25 признаках, ROC-AUC 0.87
+- **Старые клиенты** (`contact_Число сделок` >= 1): LogReg на одном признаке (число прошлых сделок)
+- **Новые клиенты** (`contact_Число сделок` < 1): LogReg на ~20 признаках
 
-Дополнительно обучены и сравнены продвинутые модели (Random Forest, CatBoost, XGBoost) — лучший результат у CatBoost (ROC-AUC 0.88).
+Дополнительно обучена CatBoost-модель на тех же признаках для сравнения и проведён SHAP-анализ важности признаков.
 
 ## Использование
 
 ```python
 from model import BuyoutPredictor
 
-predictor = BuyoutPredictor("model_weights.pkl")
+predictor = BuyoutPredictor("features.yaml", "data")
 
 predictions = predictor.predict(df)          # 0/1
 probabilities = predictor.predict_proba(df)  # float [0, 1]
 ```
 
-На вход подается `pd.DataFrame` с исходными колонками из датасета AmoCRM (одна или несколько строк). Предобработка, feature engineering и маршрутизация между моделями выполняются автоматически.
+На вход подаётся `pd.DataFrame` – запись из AmoCRM (один или несколько клиентов). Подготовка данных происходит согласно `features.yaml`.
 
 ## Структура проекта
 
-| Файл | Описание |
-|------|----------|
+| Файл / каталог | Описание |
+|----------------|----------|
 | `model.py` | Класс `BuyoutPredictor` для инференса |
-| `01_data_analysis.ipynb` | EDA, feature engineering, подготовка данных |
-| `02_model_training.ipynb` | Обучение LogReg, валидация, сохранение весов |
-| `03_advanced_models.ipynb` | Random Forest, CatBoost, XGBoost + SHAP-анализ |
-| `model_weights.pkl` | Обученные веса (генерируется `02_model_training.ipynb`) |
-| `russia-cities.json` | Справочник городов для гео-матчинга |
+| `features.yaml` | Конфиг используемых признаков |
+| `01_data_analysis.ipynb` | Чтение, очистка, подготовка и визуализация данных |
+| `02_model_training.ipynb` | Обучение LogReg на старых и новых пользователях |
+| `03_advanced_models.ipynb` | Обучение Catboost модели на тех же данных |
+| `utils/` | Вспомогательные методы: `features`, `data`, `encoding`, `metrics`, `time_split`, `plotting` |
+| `data/` | Генерируемые данные: `clean.csv`, `contexts.joblib`, `logreg_*.joblib`, `catboost_new.cbm`, `model_meta.yaml` |
+| `russia-cities.json` | Справочник городов России |
 
 ## Запуск
 
 1. Установить зависимости: `pip install -r requirements.txt`
-2. Поместить CSV-датасет (`dataset_2025-03-01_2026-03-29_external.csv`) в текущую или родительскую директорию
-3. Запустить все ячейки `01_data_analysis.ipynb` — анализ данных и подготовка признаков
-4. Запустить все ячейки `02_model_training.ipynb` — обучение LogReg и сохранение `model_weights.pkl`
-5. (Опционально) Запустить `03_advanced_models.ipynb` — сравнение с RF, CatBoost, XGBoost и SHAP-анализ
+2. Поместить CSV-датасет (`dataset_2025-03-01_2026-03-29_external.csv`) в корень репозитория
+3. Запустить все ячейки `01_data_analysis.ipynb` — анализ данных, подготовка признаков, сохранение `data/clean.csv` и `data/contexts.joblib`
+4. Запустить все ячейки `02_model_training.ipynb` — обучение LogReg, сохранение `data/logreg_*.joblib` и `data/model_meta.yaml`
+5. (Опционально) Запустить `03_advanced_models.ipynb` — CatBoost, SHAP-анализ, сохранение `data/catboost_new.cbm`
 6. Использовать `BuyoutPredictor` из `model.py`
 
 ## Зависимости
 
 ```
-pandas, numpy, scikit-learn, catboost, xgboost, shap, matplotlib, joblib
+pandas, numpy, pyyaml, scikit-learn, catboost, shap, matplotlib, joblib, tabulate, jupyter, nbformat
 ```

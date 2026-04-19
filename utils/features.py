@@ -185,6 +185,29 @@ def _classify(name: str, entry: dict, fc: FeatureColumns) -> None:
         fc.te_alpha[name] = entry["alpha"]
 
 
+def derive_feature_columns(
+    config: dict,
+    available_columns: "pd.Index | list[str] | set[str] | None" = None,
+) -> FeatureColumns:
+    """Построить ``FeatureColumns`` из YAML без выполнения операций.
+
+    Удобно, когда уже есть датафрейм с готовыми признаками (``clean.csv``)
+    и нужно только узнать, какие колонки к какому типу относятся.
+
+    Если передан ``available_columns`` (например, ``df.columns``), признаки,
+    которых нет в этом наборе, автоматически пропускаются — это нужно на
+    случай, когда часть признаков была закомментирована в YAML или
+    пропущена в ``build_features`` из-за отсутствия источников.
+    """
+    fc = FeatureColumns()
+    available = None if available_columns is None else set(available_columns)
+    for name, entry in config["features"].items():
+        if available is not None and name not in available:
+            continue
+        _classify(name, entry, fc)
+    return fc
+
+
 # ============================================================
 # Operation registry
 # ============================================================
@@ -245,6 +268,8 @@ def build_features(
     The input df is not mutated; engineered ops may write their output columns
     (including `hidden` intermediates) to the returned DataFrame.
     """
+    import warnings
+
     df = df.copy()
     context = dict(context or {})
     context.setdefault("_op_cache", {})
@@ -253,28 +278,39 @@ def build_features(
 
     features = config["features"]
 
-    # 1. Missing-column check.
-    missing: list[str] = []
+    # 1. Проходим признаки в YAML-порядке и для каждого проверяем, что все
+    # источники уже доступны (в исходном df или среди уже обработанных
+    # признаков). Если какого-то источника нет — пропускаем с предупреждением;
+    # зависимые ниже по цепочке тоже пропустятся, потому что их source не
+    # появится в ``available``. Это позволяет спокойно комментировать
+    # промежуточные признаки в YAML, не ломая пайплайн.
+    available: set[str] = set(df.columns)
+    skip: set[str] = set()
     for name, entry in features.items():
         if "op" in entry:
-            # Engineered: sources from the op itself. Sources that refer to
-            # other declared features (produced earlier in this build call)
-            # are allowed and checked lazily by df access.
-            for src in _collect_sources(entry["op"]):
-                if src not in df.columns and src not in features:
-                    missing.append(f"{name}: source {src!r}")
+            missing = [s for s in _collect_sources(entry["op"]) if s not in available]
+            if missing:
+                warnings.warn(
+                    f"Feature {name!r} пропущен: отсутствуют источники {missing}"
+                )
+                skip.add(name)
+                continue
         else:
             src = entry.get("source", name)
-            if src not in df.columns:
-                missing.append(f"{name}: source {src!r}")
-
-    if missing:
-        raise ValueError("Missing columns in DataFrame:\n  " + "\n  ".join(missing))
+            if src not in available:
+                warnings.warn(
+                    f"Feature {name!r} пропущен: нет raw-колонки {src!r}"
+                )
+                skip.add(name)
+                continue
+        available.add(name)
 
     fc = FeatureColumns()
 
-    # 2. Process features in YAML order.
+    # 2. Обрабатываем признаки (без пропущенных).
     for name, entry in features.items():
+        if name in skip:
+            continue
         if "op" in entry:
             series = _run_op(df, None, entry["op"], context)
         else:
@@ -346,9 +382,10 @@ def _apply_groups(df: pd.DataFrame, col: str, entry: dict) -> None:
         referenced.update(vs)
     unknown = referenced - actual
     if unknown:
-        raise ValueError(
-            f"Feature {col!r}: unknown category values in groups: {sorted(unknown)}. "
-            f"Existing values: {sorted(map(str, actual))}"
+        import warnings
+        warnings.warn(
+            f"Feature {col!r}: group references missing values {sorted(unknown)} "
+            f"(may be absent due to data filtering). Skipping them."
         )
     mapping: dict = {}
     for new, olds in groups.items():
@@ -561,3 +598,28 @@ def _op_pipeline(df, current, spec, context):
     for step in spec["steps"]:
         value = _run_op(df, value, step, context)
     return value
+
+
+@register_op("string_length")
+def _op_string_length(df, current, spec, context):
+    s = _resolve_input(df, current, spec)
+    return s.fillna("").astype(str).str.len()
+
+
+@register_op("split_take")
+def _op_split_take(df, current, spec, context):
+    """Split string by `separator` and return the `index`-th token (0-based).
+    Returns `default` for NaN or if the token index is out of range.
+    """
+    s = _resolve_input(df, current, spec)
+    sep = spec.get("separator", "_")
+    index = spec["index"]
+    default = spec.get("default", "__NaN__")
+
+    def take(val):
+        if pd.isna(val):
+            return default
+        parts = str(val).split(sep)
+        return parts[index] if len(parts) > index else default
+
+    return s.apply(take)
